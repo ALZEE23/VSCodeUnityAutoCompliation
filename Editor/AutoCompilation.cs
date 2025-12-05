@@ -12,21 +12,38 @@ namespace PostcyberPunk.AutoCompilation
 	public static class AutoCompilation
 	{
 		private static HttpListener listener;
-		private static bool needUpdate;
 		private static string port = "10245";
 		private static IAsyncResult _result;
-		private static bool isEditorFocused = true;
 		private static bool hasChangesWaitingForFocus = false;
+		private static double lastFocusTime = 0;
 
 		static AutoCompilation()
 		{
 			if (!SessionState.GetBool("DisableAutoComplation", false))
 			{
-				needUpdate = false;
 				CompilationPipeline.compilationFinished += OnCompilationFinished;
 				EditorApplication.quitting += _closeListener;
 				EditorApplication.update += onUpdate;
+				// Detect saat Unity window dapat fokus
+				EditorApplication.focusChanged += OnFocusChanged;
 				_createListener();
+			}
+		}
+
+		private static void OnFocusChanged(bool hasFocus)
+		{
+			if (hasFocus)
+			{
+				lastFocusTime = EditorApplication.timeSinceStartup;
+				Debug.Log("Unity Editor got focus");
+
+				// Jika ada perubahan yang menunggu, compile sekarang
+				if (hasChangesWaitingForFocus && !EditorApplication.isCompiling && !EditorApplication.isUpdating)
+				{
+					hasChangesWaitingForFocus = false;
+					AssetDatabase.Refresh();
+					Debug.Log("Auto Compilation triggered on focus");
+				}
 			}
 		}
 
@@ -55,16 +72,9 @@ namespace PostcyberPunk.AutoCompilation
 			{
 				listener.EndGetContext(result);
 
-				// Jika editor tidak fokus, tandai ada perubahan tapi jangan compile
-				if (!isEditorFocused)
-				{
-					hasChangesWaitingForFocus = true;
-				}
-				else if (!EditorApplication.isCompiling)
-				{
-					// Jika fokus dan tidak sedang compile, compile sekarang
-					needUpdate = true;
-				}
+				// Tandai ada perubahan, tapi jangan compile langsung
+				hasChangesWaitingForFocus = true;
+				Debug.Log("File change detected, waiting for focus...");
 
 				_result = listener.BeginGetContext(new AsyncCallback(OnRequest), listener);
 			}
@@ -83,29 +93,16 @@ namespace PostcyberPunk.AutoCompilation
 
 		private static void onUpdate()
 		{
-			// Check focus change
-			if (InternalEditorUtility.isApplicationActive != isEditorFocused)
+			// Cek setiap beberapa saat jika ada perubahan yang menunggu
+			// Dan sudah ada fokus dalam 0.5 detik terakhir
+			if (hasChangesWaitingForFocus &&
+				!EditorApplication.isCompiling &&
+				!EditorApplication.isUpdating &&
+				(EditorApplication.timeSinceStartup - lastFocusTime) < 0.5)
 			{
-				isEditorFocused = !isEditorFocused;
-
-				// Ketika editor dapat fokus kembali
-				if (isEditorFocused)
-				{
-					// Jika ada perubahan yang menunggu, compile sekarang
-					if (hasChangesWaitingForFocus && !EditorApplication.isCompiling && !EditorApplication.isUpdating)
-					{
-						hasChangesWaitingForFocus = false;
-						AssetDatabase.Refresh();
-						Debug.Log("Auto Compilation triggered on focus");
-					}
-				}
-			}
-
-			// Compile jika ada update dan editor fokus
-			if (isEditorFocused && !EditorApplication.isCompiling && !EditorApplication.isUpdating && needUpdate)
-			{
-				needUpdate = false;
+				hasChangesWaitingForFocus = false;
 				AssetDatabase.Refresh();
+				Debug.Log("Auto Compilation triggered");
 			}
 		}
 
@@ -127,7 +124,6 @@ namespace PostcyberPunk.AutoCompilation
 
 		private static void OnCompilationFinished(object _)
 		{
-			// Listener tetap jalan terus untuk detect perubahan
 			if (listener == null)
 			{
 				_createListener();
