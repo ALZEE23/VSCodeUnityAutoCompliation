@@ -5,6 +5,7 @@ using UnityEditor.Compilation;
 using System.Net;
 using UnityEditorInternal;
 using System.Net.Sockets;
+using System.Threading;
 
 namespace PostcyberPunk.AutoCompilation
 {
@@ -16,104 +17,112 @@ namespace PostcyberPunk.AutoCompilation
 		private static string port = "10245";
 		private static IAsyncResult _result;
 		private static bool isEditorFocused = true;
+		private static double lastChangeTime = 0;
+		private static double debounceSeconds = 1.0; // nunggu 1 detik setelah perubahan terakhir
+
 		static AutoCompilation()
 		{
-			// isEditorFocused=InternalEditorUtility.isApplicationActive;
-			if (!SessionState.GetBool("DisableAutoComplation", false))
+			if (!SessionState.GetBool("DisableAutoCompilation", false))
 			{
 				needUpdate = false;
-				// CompilationPipeline.compilationStarted += OnCompilationStarted;
 				CompilationPipeline.compilationFinished += OnCompilationFinished;
 				EditorApplication.quitting += _closeListener;
 				EditorApplication.update += onUpdate;
-				// _createListener();
 			}
 		}
 
 		private static void _createListener()
 		{
-			// Debug.LogWarning("Creating");
-			if (listener != null)
-			{
-				return;
-			};
+			if (listener != null) return;
+
 			try
 			{
 				listener = new HttpListener();
 				listener.Prefixes.Add("http://127.0.0.1:" + port + "/refresh/");
 				listener.Start();
 				_result = listener.BeginGetContext(new AsyncCallback(OnRequest), listener);
-
-				// Debug.Log("Auto Compilation HTTP server started");
 			}
 			catch (Exception e)
 			{
-				Debug.LogError("Auto Compilation starting failed:" + e);
+				Debug.LogError("Auto Compilation starting failed: " + e);
 			}
-
 		}
+
 		private static void OnRequest(IAsyncResult result)
 		{
 			if (listener.IsListening && !EditorApplication.isCompiling)
 			{
 				listener.EndGetContext(result);
 				needUpdate = true;
+				lastChangeTime = EditorApplication.timeSinceStartup;
 				_result = listener.BeginGetContext(new AsyncCallback(OnRequest), listener);
 			}
 		}
+
 		private static void _closeListener()
 		{
-			// Debug.Log("Closing Listener");
-			if (listener == null)
-			{
-				// Debug.LogWarning("Listener is null");
-				return;
-			}
-
+			if (listener == null) return;
 			listener.Stop();
 			listener.Close();
 			listener = null;
-			// Debug.Log("Closed Listener");
 		}
+
 		private static void onUpdate()
 		{
-			//Check focus
+			// Cek focus editor
 			if (InternalEditorUtility.isApplicationActive != isEditorFocused)
 			{
-				isEditorFocused = !isEditorFocused;
+				isEditorFocused = InternalEditorUtility.isApplicationActive;
 				if (isEditorFocused)
 				{
-					_closeListener();
-				}
-				else if (!EditorApplication.isCompiling && !EditorApplication.isUpdating)
-				{
-					_createListener();
+					// kalau balik fokus, cek update
+					if (needUpdate)
+					{
+						_doCompile();
+					}
 				}
 			}
-			if (!isEditorFocused && !EditorApplication.isCompiling && !EditorApplication.isUpdating && needUpdate)
+
+			// Debounce & compile hanya kalau editor fokus
+			if (isEditorFocused && needUpdate)
 			{
-				_closeListener();
-				// Debug.LogWarning("Compiled in background");
-				needUpdate = false;
-				AssetDatabase.Refresh();
+				double elapsed = EditorApplication.timeSinceStartup - lastChangeTime;
+				if (elapsed >= debounceSeconds && !EditorApplication.isCompiling && !EditorApplication.isUpdating)
+				{
+					_doCompile();
+				}
 			}
 		}
-		[MenuItem("Tools/AutoCompilation/Toggle Auto-Completion")]
+
+		private static void _doCompile()
+		{
+			needUpdate = false;
+			AssetDatabase.Refresh();
+			Debug.Log("Auto Compilation executed.");
+		}
+
+		[MenuItem("Tools/AutoCompilation/Toggle Auto-Compilation")]
 		public static void ToggleAutoCompilation()
 		{
-			bool toggle = SessionState.GetBool("DisableAutoComplation", false);
+			bool toggle = SessionState.GetBool("DisableAutoCompilation", false);
 			if (toggle)
-			{
-				_closeListener();
-			}
-			else
 			{
 				_createListener();
 			}
-			SessionState.SetBool("DisableAutoComplation", !toggle);
-			Debug.Log("Auto Completion is " + (!toggle ? "Off" : "On"));
+			else
+			{
+				_closeListener();
+			}
+			SessionState.SetBool("DisableAutoCompilation", !toggle);
+			Debug.Log("Auto Compilation is " + (!toggle ? "Off" : "On"));
 		}
-		// private static void OnCompilationStarted(object _) => _closeListener();
-		private static void OnCompilationFinished(object _) { if (!isEditorFocused) _createListener(); }
+
+		private static void OnCompilationFinished(object _)
+		{
+			if (isEditorFocused)
+			{
+				_createListener();
+			}
+		}
 	}
 }
