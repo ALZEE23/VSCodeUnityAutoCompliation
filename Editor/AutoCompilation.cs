@@ -12,38 +12,23 @@ namespace PostcyberPunk.AutoCompilation
 	public static class AutoCompilation
 	{
 		private static HttpListener listener;
+		private static bool needUpdate;
 		private static string port = "10245";
 		private static IAsyncResult _result;
-		private static bool hasChangesWaitingForFocus = false;
-		private static double lastFocusTime = 0;
+		private static double lastChangeTime = 0;
+		private static float debounceDelay = 2.0f; // Tunggu 2 detik setelah perubahan terakhir
+		private static int changeCount = 0;
 
 		static AutoCompilation()
 		{
 			if (!SessionState.GetBool("DisableAutoComplation", false))
 			{
+				needUpdate = false;
 				CompilationPipeline.compilationFinished += OnCompilationFinished;
 				EditorApplication.quitting += _closeListener;
 				EditorApplication.update += onUpdate;
-				// Detect saat Unity window dapat fokus
-				EditorApplication.focusChanged += OnFocusChanged;
 				_createListener();
-			}
-		}
-
-		private static void OnFocusChanged(bool hasFocus)
-		{
-			if (hasFocus)
-			{
-				lastFocusTime = EditorApplication.timeSinceStartup;
-				Debug.Log("Unity Editor got focus");
-
-				// Jika ada perubahan yang menunggu, compile sekarang
-				if (hasChangesWaitingForFocus && !EditorApplication.isCompiling && !EditorApplication.isUpdating)
-				{
-					hasChangesWaitingForFocus = false;
-					AssetDatabase.Refresh();
-					Debug.Log("Auto Compilation triggered on focus");
-				}
+				Debug.Log("[AutoCompilation] Initialized");
 			}
 		}
 
@@ -59,6 +44,7 @@ namespace PostcyberPunk.AutoCompilation
 				listener.Prefixes.Add("http://127.0.0.1:" + port + "/refresh/");
 				listener.Start();
 				_result = listener.BeginGetContext(new AsyncCallback(OnRequest), listener);
+				Debug.Log($"[AutoCompilation] Listener started on port {port}");
 			}
 			catch (Exception e)
 			{
@@ -72,9 +58,12 @@ namespace PostcyberPunk.AutoCompilation
 			{
 				listener.EndGetContext(result);
 
-				// Tandai ada perubahan, tapi jangan compile langsung
-				hasChangesWaitingForFocus = true;
-				Debug.Log("File change detected, waiting for focus...");
+				// Update waktu perubahan terakhir, tapi jangan compile dulu
+				lastChangeTime = EditorApplication.timeSinceStartup;
+				needUpdate = true;
+				changeCount++;
+
+				Debug.Log($"[AutoCompilation] File saved (#{changeCount}) - Waiting {debounceDelay}s before compile...");
 
 				_result = listener.BeginGetContext(new AsyncCallback(OnRequest), listener);
 			}
@@ -89,20 +78,24 @@ namespace PostcyberPunk.AutoCompilation
 			listener.Stop();
 			listener.Close();
 			listener = null;
+			Debug.Log("[AutoCompilation] Listener closed");
 		}
 
 		private static void onUpdate()
 		{
-			// Cek setiap beberapa saat jika ada perubahan yang menunggu
-			// Dan sudah ada fokus dalam 0.5 detik terakhir
-			if (hasChangesWaitingForFocus &&
+			// Compile hanya jika:
+			// 1. Ada perubahan (needUpdate = true)
+			// 2. Sudah lewat X detik sejak perubahan terakhir (debounce)
+			// 3. Tidak sedang compile
+			if (needUpdate &&
 				!EditorApplication.isCompiling &&
 				!EditorApplication.isUpdating &&
-				(EditorApplication.timeSinceStartup - lastFocusTime) < 0.5)
+				(EditorApplication.timeSinceStartup - lastChangeTime) >= debounceDelay)
 			{
-				hasChangesWaitingForFocus = false;
+				needUpdate = false;
+				Debug.Log($"[AutoCompilation] Starting compilation after {changeCount} file change(s)...");
+				changeCount = 0;
 				AssetDatabase.Refresh();
-				Debug.Log("Auto Compilation triggered");
 			}
 		}
 
@@ -124,6 +117,8 @@ namespace PostcyberPunk.AutoCompilation
 
 		private static void OnCompilationFinished(object _)
 		{
+			Debug.Log("[AutoCompilation] Compilation finished");
+
 			if (listener == null)
 			{
 				_createListener();
