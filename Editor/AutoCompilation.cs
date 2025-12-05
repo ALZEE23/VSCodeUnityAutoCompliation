@@ -5,7 +5,6 @@ using UnityEditor.Compilation;
 using System.Net;
 using UnityEditorInternal;
 using System.Net.Sockets;
-using System.Threading;
 
 namespace PostcyberPunk.AutoCompilation
 {
@@ -17,24 +16,26 @@ namespace PostcyberPunk.AutoCompilation
 		private static string port = "10245";
 		private static IAsyncResult _result;
 		private static bool isEditorFocused = true;
-		private static double lastChangeTime = 0;
-		private static double debounceSeconds = 1.0; // nunggu 1 detik setelah perubahan terakhir
+		private static bool hasChangesWaitingForFocus = false;
 
 		static AutoCompilation()
 		{
-			if (!SessionState.GetBool("DisableAutoCompilation", false))
+			if (!SessionState.GetBool("DisableAutoComplation", false))
 			{
 				needUpdate = false;
 				CompilationPipeline.compilationFinished += OnCompilationFinished;
 				EditorApplication.quitting += _closeListener;
 				EditorApplication.update += onUpdate;
+				_createListener();
 			}
 		}
 
 		private static void _createListener()
 		{
-			if (listener != null) return;
-
+			if (listener != null)
+			{
+				return;
+			}
 			try
 			{
 				listener = new HttpListener();
@@ -44,24 +45,37 @@ namespace PostcyberPunk.AutoCompilation
 			}
 			catch (Exception e)
 			{
-				Debug.LogError("Auto Compilation starting failed: " + e);
+				Debug.LogError("Auto Compilation starting failed:" + e);
 			}
 		}
 
 		private static void OnRequest(IAsyncResult result)
 		{
-			if (listener.IsListening && !EditorApplication.isCompiling)
+			if (listener.IsListening)
 			{
 				listener.EndGetContext(result);
-				needUpdate = true;
-				lastChangeTime = EditorApplication.timeSinceStartup;
+
+				// Jika editor tidak fokus, tandai ada perubahan tapi jangan compile
+				if (!isEditorFocused)
+				{
+					hasChangesWaitingForFocus = true;
+				}
+				else if (!EditorApplication.isCompiling)
+				{
+					// Jika fokus dan tidak sedang compile, compile sekarang
+					needUpdate = true;
+				}
+
 				_result = listener.BeginGetContext(new AsyncCallback(OnRequest), listener);
 			}
 		}
 
 		private static void _closeListener()
 		{
-			if (listener == null) return;
+			if (listener == null)
+			{
+				return;
+			}
 			listener.Stop();
 			listener.Close();
 			listener = null;
@@ -69,42 +83,36 @@ namespace PostcyberPunk.AutoCompilation
 
 		private static void onUpdate()
 		{
-			// Cek focus editor
+			// Check focus change
 			if (InternalEditorUtility.isApplicationActive != isEditorFocused)
 			{
-				isEditorFocused = InternalEditorUtility.isApplicationActive;
+				isEditorFocused = !isEditorFocused;
+
+				// Ketika editor dapat fokus kembali
 				if (isEditorFocused)
 				{
-					// kalau balik fokus, cek update
-					if (needUpdate)
+					// Jika ada perubahan yang menunggu, compile sekarang
+					if (hasChangesWaitingForFocus && !EditorApplication.isCompiling && !EditorApplication.isUpdating)
 					{
-						_doCompile();
+						hasChangesWaitingForFocus = false;
+						AssetDatabase.Refresh();
+						Debug.Log("Auto Compilation triggered on focus");
 					}
 				}
 			}
 
-			// Debounce & compile hanya kalau editor fokus
-			if (isEditorFocused && needUpdate)
+			// Compile jika ada update dan editor fokus
+			if (isEditorFocused && !EditorApplication.isCompiling && !EditorApplication.isUpdating && needUpdate)
 			{
-				double elapsed = EditorApplication.timeSinceStartup - lastChangeTime;
-				if (elapsed >= debounceSeconds && !EditorApplication.isCompiling && !EditorApplication.isUpdating)
-				{
-					_doCompile();
-				}
+				needUpdate = false;
+				AssetDatabase.Refresh();
 			}
 		}
 
-		private static void _doCompile()
-		{
-			needUpdate = false;
-			AssetDatabase.Refresh();
-			Debug.Log("Auto Compilation executed.");
-		}
-
-		[MenuItem("Tools/AutoCompilation/Toggle Auto-Compilation")]
+		[MenuItem("Tools/AutoCompilation/Toggle Auto-Completion")]
 		public static void ToggleAutoCompilation()
 		{
-			bool toggle = SessionState.GetBool("DisableAutoCompilation", false);
+			bool toggle = SessionState.GetBool("DisableAutoComplation", false);
 			if (toggle)
 			{
 				_createListener();
@@ -113,13 +121,14 @@ namespace PostcyberPunk.AutoCompilation
 			{
 				_closeListener();
 			}
-			SessionState.SetBool("DisableAutoCompilation", !toggle);
-			Debug.Log("Auto Compilation is " + (!toggle ? "Off" : "On"));
+			SessionState.SetBool("DisableAutoComplation", !toggle);
+			Debug.Log("Auto Completion is " + (!toggle ? "On" : "Off"));
 		}
 
 		private static void OnCompilationFinished(object _)
 		{
-			if (isEditorFocused)
+			// Listener tetap jalan terus untuk detect perubahan
+			if (listener == null)
 			{
 				_createListener();
 			}
